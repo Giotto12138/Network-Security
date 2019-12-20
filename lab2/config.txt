@@ -1,0 +1,6 @@
+To run lab2 milestone1
+put crap_shan directory under ~/.playground/connectors
+copy lab2 directory to somewhere
+enter venv
+under lab2 directory, input this command into console: 
+python autograder_lab2_client.py 20194.0.0.19000 6 qzhang68@jhu.edu milestone1 submit
