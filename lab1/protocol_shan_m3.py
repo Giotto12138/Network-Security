@@ -132,8 +132,8 @@ class PassthroughProtocol(StackingProtocol):
         super().__init__()
         
         self.mode = mode
-        #three stages: handshake, connected, closing
-        self.stage = "handshake"
+        #four stages: handshake_1, handshake_2, connected, closing
+        self.stage = "handshake_1"
         #records if the data packet of a sequence number is received before
         self.received_seqs = {}
         
@@ -166,29 +166,40 @@ class PassthroughProtocol(StackingProtocol):
         self.deserializer.update(buffer)
         for packet in self.deserializer.nextPackets():
             
+            packet_type = packet.DEFINITION_IDENTIFIER
+            if not packet_type or not packet.DEFINITION_VERSION:  
+                print("The received packet does not have a DEFINITION_IDENTIFIER or DEFINITION_VERSION")
+                continue
+            
             if self.stage == "handshake":
                 if isinstance(packet, HandshakePacket):
                     if self.mode == "server":
                         self.handshake_received_server(packet)
+                        continue
                     elif self.mode == "client":
                         self.handshake_received_client(packet)
+                        continue
                         
             if self.stage == "connected":        
                 #normal data transmission
                 if isinstance(packet, DataPacket):
                     self.data_received_duplex(packet)
+                    continue
                 #get a shutdown packet from another side    
                 if isinstance(packet,ShutdownPacket):
                     self.shutdown_received(packet)
+                    continue
                     
             if self.stage == "closing":
                 #simultaneous shutdown
                 if isinstance(packet, ShutdownPacket):
                     self.shutdown_received(packet)
+                    continue
                 
                 #get the ACK of shutdown packet
                 if isinstance(packet, DataPacket):
                     self.shutdown_received(packet)
+                    continue
             
     def connection_lost(self, exc):
         #logger.debug("{} passthrough connection lost. Shutting down higher layer.".format(self.mode))
@@ -200,49 +211,66 @@ class PassthroughProtocol(StackingProtocol):
     def handshake_received_server(self, packet):
         print("handshake_received_server", self.stage)
         
+        if packet.DEFINITION_IDENTIFIER != "poop.handshakepacket" or packet.DEFINITION_VERSION != "1.0":
+            print("it is a wrong packet")
+            return
+        
         if packet.status == 2: 
             print("error packet")
-            return
         
         if not checkHash(packet):
             print("hash wrong")
-            self.write_error_packet(packet)
-            return
+            self.handshake_error()
         
-        if packet.status == 0:
-            if packet.ACK:
-                self.write_error_packet(packet)
+        if not packet.SYN:
+            print("missing SYN")
+            self.handshake_error()
+        
+        if self.stage == "handshake_1":
+        #get the first handshake packet from client
+            if packet.status == 0:
+                if packet.ACK:
+                    self.handshake_error()
+                else:
+                    asyncio.ensure_future(self.server_handshake_packet1(packet))
+                    self.stage = "handshake_2"
+                    print("server sends the first handshake packet")
             else:
-                asyncio.ensure_future(self.server_handshake_packet1(packet))
-                print("server sends the first handshake packet")
+                self.handshake_error()
                 
-        if packet.status == 1:
-            if packet.ACK == ((self.y+1)%(2**32)):
-                self.stage = "connected"
-                
-                #stop sending client_handshake_packet1
-                self.server_handshake_packet1_confirmed = -1
-                        
-                self.higher_transport = POOPTransport(self, self.transport, self.seq)
-                self.higherProtocol().connection_made(self.higher_transport)
+        #get the second handshake packet from client  
+        if self.stage == "handshake_2":      
+            if packet.status == 1:
+                if packet.ACK == ((self.y+1)%(2**32)):
+                    self.stage = "connected"
+                    
+                    #stop sending client_handshake_packet1
+                    self.server_handshake_packet1_confirmed = -1
+                            
+                    self.higher_transport = POOPTransport(self, self.transport, self.seq)
+                    self.higherProtocol().connection_made(self.higher_transport)
+                else:
+                    self.handshake_error()
             else:
-                self.write_error_packet(packet)
-                
+                self.handshake_error()
+            
     def handshake_received_client(self, packet):
         print("data_received_client", self.stage)
         
         #stop sending client_handshake_packet1
         self.client_handshake_packet1_confirmed = -1
         
+        if packet.DEFINITION_IDENTIFIER != "poop.handshakepacket" or packet.DEFINITION_VERSION != "1.0":
+            print("it is a wrong packet")
+            return
+        
         if packet.status == 2: 
             print("error packet")
-            return
         
         if not checkHash(packet):
             print("hash wrong")
             # asyncio.ensure_future(self.client_handshake_packet1())
-            self.write_error_packet(packet)
-            return
+            self.handshake_error()
         
         if packet.status == 1 and packet.ACK == ((self.x+1)%(2**32)):
             asyncio.ensure_future(self.client_handshake_packet2(packet))                  
@@ -253,7 +281,7 @@ class PassthroughProtocol(StackingProtocol):
             self.higherProtocol().connection_made(self.higher_transport)
             
         else:
-            self.write_error_packet(packet)
+            self.handshake_error()
     
     #------------------------ send handshake packet part ------------------------------
     async def client_handshake_packet1(self):  
@@ -290,10 +318,25 @@ class PassthroughProtocol(StackingProtocol):
         #stop sending client_handshake_packet2
         self.client_handshake_packet2_confirmed = -1
         
+        if packet.DEFINITION_IDENTIFIER != "poop.datapacket" or packet.DEFINITION_VERSION != "1.0":
+            print("it is a wrong packet")
+            return
+        
+        if packet.status == 2:
+            print("get error packet")
+        
         if not checkHash(packet):
             print("hash wrong")
+            self.data_error()
+        
+        if not packet.seq or not packet.data or not packet.hash:
+            print("Wrong data packet.")
+            return
             
         if packet.ACK:
+            if packet.seq or packet.data:
+                print("wrong ACK packet.")
+                return
             #when this ACK packet is not corresponding to a data packet sent before
             if packet.ACK not in self.higher_transport.confirmed_seqs:
                 print("wrong ACK data packet")                    
@@ -324,7 +367,6 @@ class PassthroughProtocol(StackingProtocol):
         
         if not checkHash(packet):
             print("hash wrong")
-            return
         
         self.stage = "closing"
         
@@ -339,7 +381,6 @@ class PassthroughProtocol(StackingProtocol):
     def ack_received(self,packet):
         if not checkHash(packet):
             print("hash wrong")
-            return
         
         if packet.ACK == self.higher_transport.FIN:
             # fin has been ACKed by other agent. Teardown connection.
@@ -347,11 +388,18 @@ class PassthroughProtocol(StackingProtocol):
             self.higher_transport.confirmed_seqs[packet.ACK] = -1
             self.connection_lost()
             self.transport.close()
-                
-    def write_error_packet(self, packet):
-        print("write_error_packet")
-        packet.status = 2
+            
+    #---------------------------------- send error packet ----------------------------------------            
+    def handshake_error(self):
+        print("handshake error!")
+        packet = HandshakePacket(status=2)
         self.transport.write(packet.__serialize__())
+        
+    def data_error(self):
+        print("data transimission error!")
+        packet = DataPacket(status=2)
+        self.transport.write(packet.__serialize__())
+
 
 PassthroughClientFactory = StackingProtocolFactory.CreateFactoryType(
     lambda: PassthroughProtocol(mode="client")

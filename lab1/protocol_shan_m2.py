@@ -206,16 +206,16 @@ class PassthroughProtocol(StackingProtocol):
         
         if not checkHash(packet):
             print("hash wrong")
-            self.write_error_packet(packet)
+            self.handshake_error()
             return
-        
+        #get the first handshake packet from client
         if packet.status == 0:
             if packet.ACK:
-                self.write_error_packet(packet)
+                self.handshake_error()
             else:
                 asyncio.ensure_future(self.server_handshake_packet1(packet))
                 print("server sends the first handshake packet")
-                
+        #get the second handshake packet from client        
         if packet.status == 1:
             if packet.ACK == ((self.y+1)%(2**32)):
                 self.stage = "connected"
@@ -226,7 +226,7 @@ class PassthroughProtocol(StackingProtocol):
                 self.higher_transport = POOPTransport(self, self.transport, self.seq)
                 self.higherProtocol().connection_made(self.higher_transport)
             else:
-                self.write_error_packet(packet)
+                self.handshake_error()
                 
     def handshake_received_client(self, packet):
         print("data_received_client", self.stage)
@@ -241,7 +241,7 @@ class PassthroughProtocol(StackingProtocol):
         if not checkHash(packet):
             print("hash wrong")
             # asyncio.ensure_future(self.client_handshake_packet1())
-            self.write_error_packet(packet)
+            self.handshake_error()
             return
         
         if packet.status == 1 and packet.ACK == ((self.x+1)%(2**32)):
@@ -253,7 +253,8 @@ class PassthroughProtocol(StackingProtocol):
             self.higherProtocol().connection_made(self.higher_transport)
             
         else:
-            self.write_error_packet(packet)
+            self.handshake_error()
+            return
     
     #------------------------ send handshake packet part ------------------------------
     async def client_handshake_packet1(self):  
@@ -348,9 +349,10 @@ class PassthroughProtocol(StackingProtocol):
             self.connection_lost()
             self.transport.close()
                 
-    def write_error_packet(self, packet):
-        print("write_error_packet")
-        packet.status = 2
+    #---------------------------------- send error packet ----------------------------------------            
+    def handshake_error(self):
+        print("handshake error!")
+        packet = HandshakePacket(status=2)
         self.transport.write(packet.__serialize__())
 
 PassthroughClientFactory = StackingProtocolFactory.CreateFactoryType(
