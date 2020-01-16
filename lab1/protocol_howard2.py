@@ -337,7 +337,7 @@ class PassthroughProtocol(StackingProtocol):
         packet.hash = 0
         packet = hashPacket(packet)
         self.transport.write(packet.__serialize__())
-                    
+                
         
     def connection_lost(self, exc):
         self._stage = 'closing'
